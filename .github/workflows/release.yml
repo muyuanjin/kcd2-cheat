@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-mod:
+    name: Build Mods
+    runs-on: ubuntu-latest
+    env:
+      BUILD_TIMESTAMP: $(date -u +'%Y%m%dT%H%M%SZ')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip  # 仅安装必要依赖
+
+      - name: Parallel Build Mods
+        shell: bash
+        run: |
+          mkdir -p artifact
+          build_mod() {
+            local mod_path="$1"
+          
+            # 动态加载配置
+            source "$mod_path/release.properties"
+            local temp_dir=$(mktemp -d)
+          
+            # 版本注入逻辑
+            sed "s/__VERSION__/$MOD_VERSION/g" "$mod_path/data/scripts/mods/$MOD_NAME.lua" > "$temp_dir/$MOD_NAME.lua"
+          
+            # 构建PAK结构
+            7z a -tzip "$temp_dir/$MOD_NAME.pak" \
+              "$mod_path/data/scripts/mods/*" \
+              "$mod_path/data/items/*" 2>/dev/null
+          
+            # 生成Manifest
+            jq -n \
+              --arg name "$MOD_NAME" \
+              --arg version "$MOD_VERSION" \
+              --arg desc "$MOD_DESC" \
+              --arg author "$MOD_AUTHOR" \
+              '{info: {
+                name: $name,
+                version: $version,
+                description: $desc,
+                author: $author,
+                created_on: (now|todateiso8601),
+                dependencies: []
+              }}' > "$temp_dir/mod.manifest"
+          
+            # 最终打包
+            7z a -tzip "artifact/$MOD_NAME-v$MOD_VERSION.zip" \
+              "$temp_dir/$MOD_NAME.pak" \
+              "$temp_dir/mod.manifest"
+          
+            rm -rf "$temp_dir"
+          }
+          export -f build_mod
+          parallel build_mod ::: mods/cheat mods/cheat-*
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: ${BUILD_TIMESTAMP}
+          tag_name: "release/${BUILD_TIMESTAMP}"
+          files: |
+            artifact/*.zip
+          make_latest: true
