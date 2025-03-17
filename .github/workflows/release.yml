@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  build-mod:
+    name: Build Mods
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          echo "BUILD_TIMESTAMP=$(date -u +'%Y%m%dT%H%M%SZ')" >> $GITHUB_ENV
+
+      - name: Parallel Build Mods
+        shell: bash
+        run: |
+          mkdir -p artifact
+          
+          echo "Searching mod directories..."
+          find mods -maxdepth 1 -mindepth 1 -type d | while read path; do
+            [ -f "$path/release.properties" ] && echo "Found valid mod: $path"
+          done
+
+          build_mod() {
+            local mod_path="$1"
+            echo "Processing mod at: $mod_path"
+          
+            if [ ! -f "$mod_path/release.properties" ]; then
+              echo "ERROR: release.properties not found in $mod_path" >&2
+              return 1
+            fi
+
+            source "$mod_path/release.properties" || {
+              echo "ERROR: Failed to load release.properties in $mod_path" >&2
+              return 1
+            }
+          
+            for var in MOD_NAME MOD_VERSION MOD_DESC MOD_AUTHOR; do
+              if [ -z "${!var}" ]; then
+                echo "ERROR: Missing $var in $mod_path/release.properties" >&2
+                return 1
+              fi
+            done
+
+            local temp_dir=$(mktemp -d)
+            local outer_dir="$temp_dir/$MOD_NAME"
+            mkdir -p "$outer_dir/data"
+          
+            local build_data=$(mktemp -d)
+            cp -r "$mod_path/data/." "$build_data/"
+
+            echo "Building for mod: $MOD_NAME"
+            echo "Source files in build_data:"
+            ls -lR "$build_data"
+
+            sed -i "s/__VERSION__/$MOD_VERSION/g" "$build_data/scripts/mods/$MOD_NAME.lua"
+
+            (cd "$build_data" && 7z a -tzip -r -mtm=off -mtc=off -mta=off "$outer_dir/data/$MOD_NAME.pak" ./*)
+
+            created_on=$(TZ=UTC date +'%a %b %d %H:%M:%S %Z %Y')
+            cat <<EOF > "$outer_dir/mod.manifest"
+          <?xml version="1.0" encoding="utf-8"?>
+          <kcd_mod>
+            <info>
+              <name>$MOD_NAME</name>
+              <description>$MOD_DESC</description>
+              <author>$MOD_AUTHOR</author>
+              <version>$MOD_VERSION</version>
+              <created_on>$created_on</created_on>
+              <dependencies/>
+            </info>
+          </kcd_mod>
+          EOF
+
+            7z a -tzip "artifact/$MOD_NAME-v$MOD_VERSION.zip" "$outer_dir" || {
+              echo "ERROR: Failed to create ZIP for $MOD_NAME" >&2
+              return 1
+            }
+
+            rm -rf "$temp_dir" "$build_data"
+            echo "Successfully built $MOD_NAME-v$MOD_VERSION.zip"
+          }
+
+          export -f build_mod
+          find mods -maxdepth 1 -mindepth 1 -type d | while read path; do
+            [ -f "$path/release.properties" ] && echo "$path"
+          done | parallel build_mod
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: ${{ env.BUILD_TIMESTAMP }}
+          tag_name: "release/${{ env.BUILD_TIMESTAMP }}"
+          files: |
+            artifact/*.zip
+          make_latest: true
