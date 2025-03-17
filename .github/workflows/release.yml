@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-mod:
+    name: Build Mods
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip jq
+          echo "BUILD_TIMESTAMP=$(date -u +'%Y%m%dT%H%M%SZ')" >> $GITHUB_ENV
+
+      - name: Parallel Build Mods
+        shell: bash
+        run: |
+          mkdir -p artifact
+          build_mod() {
+            local mod_path="$1"
+          
+            # 加载mod配置
+            source "$mod_path/release.properties"
+            local temp_dir=$(mktemp -d)
+            local outer_dir="$temp_dir/$MOD_NAME"
+            mkdir -p "$outer_dir/data"
+          
+            # 创建带版本注入的构建目录
+            local build_data=$(mktemp -d)
+            cp -r "$mod_path/data/." "$build_data/"
+          
+            # 版本注入LUA文件
+            sed "s/__VERSION__/$MOD_VERSION/g" \
+              "$build_data/scripts/mods/$MOD_NAME.lua" \
+              > "$build_data/scripts/mods/$MOD_NAME.lua.tmp"
+            mv "$build_data/scripts/mods/$MOD_NAME.lua.tmp" \
+              "$build_data/scripts/mods/$MOD_NAME.lua"
+          
+            # 构建PAK文件（包含处理后的数据）
+            (cd "$build_data" && 7z a -tzip "$outer_dir/data/$MOD_NAME.pak" ./*)
+          
+            # 生成Manifest
+            jq -n \
+              --arg name "$MOD_NAME" \
+              --arg version "$MOD_VERSION" \
+              --arg desc "$MOD_DESC" \
+              --arg author "$MOD_AUTHOR" \
+              '{info: {
+                name: $name,
+                version: $version,
+                description: $desc,
+                author: $author,
+                created_on: (now|todateiso8601),
+                dependencies: []
+              }}' > "$outer_dir/mod.manifest"
+          
+            # 最终打包成标准结构
+            7z a -tzip "artifact/$MOD_NAME-v$MOD_VERSION.zip" "$outer_dir"
+          
+            # 清理临时目录
+            rm -rf "$temp_dir" "$build_data"
+          }
+          export -f build_mod
+          find mods -maxdepth 1 -type d -name "mod*" | parallel build_mod
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: ${{ env.BUILD_TIMESTAMP }}
+          tag_name: "release/${{ env.BUILD_TIMESTAMP }}"
+          files: |
+            artifact/*.zip
+          make_latest: true
