@@ -1,3 +1,10 @@
+This repository is forked from the [KCD2 Cheat Mod](https://github.com/pryans/kcd2-cheat) repository, used to store my own modifications.
+
+# Added Modifications
+- Added the `cheat_transfer_items` command to the `cheat`, used to transfer all items from the npc to player/horse/stash/delete.
+
+---
+
 ## KCD2 Cheat Mod
 https://www.nexusmods.com/kingdomcomedeliverance2/mods/114
 
